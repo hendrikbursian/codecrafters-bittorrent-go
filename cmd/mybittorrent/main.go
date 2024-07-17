@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 
@@ -16,12 +17,28 @@ func main() {
 		reader := strings.NewReader(os.Args[2])
 		decoded, err := bencode.Decode(reader)
 		if err != nil {
-			fmt.Println(err)
-			return
+			log.Fatalln(err)
 		}
 
 		jsonOutput, _ := json.Marshal(decoded)
 		fmt.Println(string(jsonOutput))
+	} else if command == "info" {
+		file := os.Args[2]
+		fd, err := os.Open(file)
+		if err != nil {
+			log.Fatalln(err)
+		}
+
+		decoded, err := bencode.Decode(fd)
+		if err != nil {
+			log.Fatalf("Error reading torrent file: %+v", err)
+		}
+
+		m := decoded.(map[string]any)
+		info := m["info"].(map[string]any)
+
+		fmt.Printf("Tracker URL: %s\n", m["announce"])
+		fmt.Printf("Length: %d\n", info["length"])
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
