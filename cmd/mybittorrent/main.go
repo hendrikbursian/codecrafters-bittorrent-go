@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -39,6 +40,12 @@ func main() {
 
 		fmt.Printf("Tracker URL: %s\n", m["announce"])
 		fmt.Printf("Length: %d\n", info["length"])
+
+		h := sha1.New()
+		bencode.Marshal(h, info)
+		sum := h.Sum([]byte{})
+
+		fmt.Printf("Info hash: %x\n", sum)
 	} else {
 		fmt.Println("Unknown command: " + command)
 		os.Exit(1)
