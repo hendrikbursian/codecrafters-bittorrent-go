@@ -116,24 +116,25 @@ func main() {
 		conn, id := doHandshake(t, peers[1])
 		log.Printf("Connected to peer: %s", id)
 
-		payload := getMessage(conn)
-		if payload[0] != MID_BITFIELD {
-			log.Fatalf("expected bitfield message, received %d\n", payload[0])
+		m := getMessage(conn)
+		if m.Id != MID_BITFIELD {
+			log.Fatalf("expected bitfield message, received %d\n", m.Id)
 		}
-		log.Printf("Received bitfield: %b\n", payload[1:])
+		log.Printf("Received bitfield: %b\n", m.Payload)
 
-		_, err = conn.Write([]byte{0, 0, 0, 1, MID_INTERESTED})
+		m = Message{Id: MID_INTERESTED}
+		_, err = conn.Write(m.Bytes())
 		if err != nil {
 			log.Fatalf("cant write to connection: %+v\n", err)
 		}
 
-		payload = getMessage(conn)
-		if payload[0] != MID_UNCHOKE {
-			log.Fatalf("expected unchoke message, received %d\n", payload[0])
+		m = getMessage(conn)
+		if m.Id != MID_UNCHOKE {
+			log.Fatalf("expected unchoke message, received %d\n", m.Id)
 		}
 		log.Printf("Received unchoke message\n")
 
-		pieceLength := ((pieceNumber + 1) * int(t.Meta.Info.PieceLength)) % int(t.Meta.Info.Length)
+		pieceLength := (t.Meta.Info.Length - ((uint32(pieceNumber) + 1) * t.Meta.Info.PieceLength)) % t.Meta.Info.PieceLength
 		piece := downloadPiece(conn, uint32(pieceNumber), uint32(pieceLength))
 
 		h := sha1.New()
@@ -166,20 +167,21 @@ func main() {
 		conn, id := doHandshake(t, peers[1])
 		log.Printf("Connected to peer: %s", id)
 
-		payload := getMessage(conn)
-		if payload[0] != MID_BITFIELD {
-			log.Fatalf("expected bitfield message, received %d\n", payload[0])
+		m := getMessage(conn)
+		if m.Id != MID_BITFIELD {
+			log.Fatalf("expected bitfield message, received %d\n", m.Id)
 		}
-		log.Printf("Received bitfield: %b\n", payload[1:])
+		log.Printf("Received bitfield: %b\n", m.Payload)
 
-		_, err := conn.Write([]byte{0, 0, 0, 1, MID_INTERESTED})
+		m = Message{Id: MID_INTERESTED}
+		_, err := conn.Write(m.Bytes())
 		if err != nil {
 			log.Fatalf("cant write to connection: %+v\n", err)
 		}
 
-		payload = getMessage(conn)
-		if payload[0] != MID_UNCHOKE {
-			log.Fatalf("expected unchoke message, received %d\n", payload[0])
+		m = getMessage(conn)
+		if m.Id != MID_UNCHOKE {
+			log.Fatalf("expected unchoke message, received %d\n", m.Id)
 		}
 		log.Printf("Received unchoke message\n")
 
@@ -239,38 +241,41 @@ func downloadPiece(conn net.Conn, index uint32, pieceLength uint32) []byte {
 			if err != nil {
 				log.Fatalf("cant write to connection: %+v\n", err)
 			}
-			payload := getMessage(conn)
-			if payload[0] != MID_PIECE {
-				log.Fatalf("expected piece message, received %d\n", payload[0])
+			message := getMessage(conn)
+			if message.Id != MID_PIECE {
+				log.Fatalf("expected piece message, received %d\n", message.Id)
 			}
-			index := binary.BigEndian.Uint32(payload[1:5])
-			begin := binary.BigEndian.Uint32(payload[5:9])
+			index := binary.BigEndian.Uint32(message.Payload[0:4])
+			begin := binary.BigEndian.Uint32(message.Payload[4:8])
 
-			payloadSize := uint32(len(payload[9:]))
+			payloadSize := uint32(len(message.Payload[8:]))
 			downloaded += payloadSize
 
 			log.Printf("Received block: idx (%d) begin (%d) blocksize (%d) downloaded (%d) progress: %.2f%%\n", index, begin, payloadSize, downloaded, float64(downloaded)/float64(pieceLength)*100)
-			copy(piece[begin:], payload[9:])
+			copy(piece[begin:], message.Payload[8:])
 		}
 	}
-
 	return piece
 }
 
-func getMessage(conn net.Conn) []byte {
+func getMessage(conn net.Conn) Message {
 	lengthBuf := make([]byte, 4)
 	_, err := io.ReadFull(conn, lengthBuf)
 	if err != nil {
 		log.Fatalf("cant read length prefix from connection: %+v", err)
 	}
-	length := binary.BigEndian.Uint32(lengthBuf)
 
+	length := binary.BigEndian.Uint32(lengthBuf)
 	payload := make([]byte, length)
 	_, err = io.ReadFull(conn, payload)
 	if err != nil {
 		log.Fatalf("cant read payload from connection: %+v", err)
 	}
-	return payload
+
+	return Message{
+		Id:      payload[0],
+		Payload: payload[1:],
+	}
 }
 
 const (
@@ -292,10 +297,10 @@ type Message struct {
 
 func (m *Message) Bytes() []byte {
 	length := 1 + len(m.Payload)
-	buf := binary.BigEndian.AppendUint32([]byte{}, uint32(length))
-	buf = append(buf, byte(m.Id))
-	buf = append(buf, m.Payload...)
-
+	buf := make([]byte, 4+length)
+	binary.BigEndian.PutUint32(buf[0:4], uint32(length))
+	buf[4] = byte(m.Id)
+	copy(buf[5:], m.Payload)
 	return buf
 }
 
@@ -322,7 +327,6 @@ func listenForMessages(conn net.Conn) chan Message {
 			_, err = io.ReadFull(conn, payloadBuf)
 			if err != nil {
 				log.Fatalf("error reading from connection: %+v", err)
-				return
 			}
 
 			ch <- Message{
