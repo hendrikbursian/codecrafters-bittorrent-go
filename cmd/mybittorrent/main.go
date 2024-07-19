@@ -68,22 +68,25 @@ func main() {
 		t := NewTorrent(torrentFile)
 		t.refreshPeers()
 		for _, p := range t.Peers {
-			fmt.Println(p)
+			fmt.Println(p.addr)
 		}
 	case "handshake":
 		fs := flag.NewFlagSet("handshake", flag.ExitOnError)
 		fs.Parse(os.Args[2:])
 		torrentFile := fs.Arg(0)
-		addr := flag.Arg(1)
+		addr := fs.Arg(1)
+		if torrentFile == "" {
+			log.Fatal("Torrent file not provided")
+		}
+		if addr == "" {
+			log.Fatal("Address not provided")
+		}
 
 		t := NewTorrent(torrentFile)
-		t.refreshPeers()
+		t.Peers = []Peer{{addr: addr}}
 		t.connectPeers()
-		for _, p := range t.Peers {
-			if p.addr == addr {
-				fmt.Printf("Peer ID: %s\n", p.id)
-				break
-			}
+		if t.Peers[0].id != "" {
+			fmt.Printf("Peer ID: %s\n", t.Peers[0].id)
 		}
 	case "download_piece":
 		fs := flag.NewFlagSet("download_piece", flag.ExitOnError)

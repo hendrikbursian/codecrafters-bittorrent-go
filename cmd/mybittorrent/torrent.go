@@ -18,7 +18,6 @@ import (
 	"github.com/jackpal/bencode-go"
 )
 
-const MAX_PEERS = 5
 const BLOCK_SIZE = 16 * 1024
 
 type Peer struct {
@@ -26,6 +25,7 @@ type Peer struct {
 	addr     string
 	bitfield []byte
 	conn     net.Conn
+	choked   bool
 }
 
 type Torrent struct {
@@ -102,7 +102,7 @@ func (t *Torrent) refreshPeers() {
 	for i := 0; i < len(res.Peers); i += 6 {
 		port := binary.BigEndian.Uint16([]byte(res.Peers[i+4 : i+6]))
 		addr := fmt.Sprintf("%d.%d.%d.%d:%d", res.Peers[i], res.Peers[i+1], res.Peers[i+2], res.Peers[i+3], port)
-		t.Peers = append(t.Peers, Peer{addr: addr})
+		t.Peers = append(t.Peers, Peer{addr: addr, choked: true})
 	}
 }
 
@@ -137,12 +137,15 @@ func (p *Peer) download(t *Torrent, done func()) {
 		return
 	}
 
-	p.sendInterest()
 	for {
 		index, found := p.nextPiece(t)
 		if !found {
 			log.Printf("Peer %s Nothing more to download (remaining queue: %d). Bye!\n", p.addr, len(t.queue))
 			return
+		}
+
+		if p.choked {
+			p.sendInterest()
 		}
 
 		log.Printf("Peer %s Starting download of piece %d", p.addr, index)
@@ -171,14 +174,14 @@ func (p *Peer) download(t *Torrent, done func()) {
 			_, err := p.conn.Write(request)
 			if err != nil {
 				t.queue <- index
-				log.Panicf("Cannot write on connection to peer %q, readding piece to queue: %+v\n", p.addr, err)
+				log.Panicf("Cannot write on connection to peer %q, readded piece to queue: %+v\n", p.addr, err)
 			}
 
 			log.Printf("Peer %s Waiting for block %d-%d of piece %d\n", p.addr, begin, begin+blockSize, index)
 			m := p.receiveMessage()
 			if m.Id != MID_PIECE {
 				t.queue <- index
-				log.Panicf("Peer %s Cannot receive piece message. Received %d instead, readding piece to queue.\n", p.addr, m.Id)
+				log.Panicf("Peer %s Cannot receive piece message. Received %d instead, readded piece to queue.\n", p.addr, m.Id)
 			}
 			log.Printf("Peer %s <- Received block %d-%d of piece %d\n", p.addr, begin, begin+blockSize, index)
 
@@ -190,14 +193,14 @@ func (p *Peer) download(t *Torrent, done func()) {
 
 		if !validatePiece(pieceBuf, t.PieceHashes[index]) {
 			t.queue <- index
-			log.Panicf("Piece %d from peer %q invalid!, readding piece to queue.\n", index, p.addr)
+			log.Panicf("Piece %d from peer %q invalid!, readded piece to queue.\n", index, p.addr)
 		}
 
 		offset := index * int(t.Meta.Info.PieceLength)
 		_, err := t.OutputFile.WriteAt(pieceBuf, int64(offset))
 		if err != nil {
 			t.queue <- index
-			log.Panicf("Piece %d from peer %q cannot be written to file, readding piece to queue.\n", index, p.addr)
+			log.Panicf("Piece %d from peer %q cannot be written to file, readded piece to queue.\n", index, p.addr)
 		}
 	}
 }
@@ -228,8 +231,8 @@ func (p *Peer) nextPiece(t *Torrent) (item int, found bool) {
 
 func (t *Torrent) waitForDownloads() {
 	var wg sync.WaitGroup
+	wg.Add(len(t.Peers))
 	for _, p := range t.Peers {
-		wg.Add(1)
 		go p.download(t, wg.Done)
 	}
 	wg.Wait()
@@ -245,8 +248,10 @@ func (t *Torrent) connectPeers() {
 
 	var wg sync.WaitGroup
 	wg.Add(len(t.Peers))
-	for i, peersN := 0, 0; i < len(t.Peers) || peersN >= MAX_PEERS; i++ {
+	for i := 0; i < len(t.Peers); i++ {
 		go func() {
+			defer wg.Done()
+
 			var err error
 			p := &t.Peers[i]
 			p.conn, err = net.Dial("tcp", p.addr)
@@ -275,10 +280,8 @@ func (t *Torrent) connectPeers() {
 				return
 			}
 			p.bitfield = m.Payload
-			peersN++
 
 			log.Printf("Peer %s connected (id: %s)\n", p.addr, p.id)
-			wg.Done()
 		}()
 	}
 	wg.Wait()
@@ -350,6 +353,7 @@ func (p *Peer) sendInterest() {
 	if m.Id != MID_UNCHOKE {
 		log.Panicf("Cannot receive unchoke message from peer %q. Received %d instead\n", p.addr, m.Id)
 	}
+	p.choked = false
 	log.Printf("Peer %s <- Unchocked message received\n", p.addr)
 }
 
